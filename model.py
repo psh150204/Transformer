@@ -58,7 +58,7 @@ class MultiHeadAttention(nn.Module):
 class EncoderBlock(nn.Module):
     def __init__(self):
         super(EncoderBlock, self).__init__()
-        
+         
 
     def forward(self, x):
         pass
@@ -69,6 +69,23 @@ class DecoderBlock(nn.Module):
 
     def forward(self, x):
         pass
+
+# one-hot vector encoding
+class Embedding():
+    def __init__(self, vocab_size):
+        self.dim = vocab_size # embedding dimension
+
+    def forward(self, x):
+        # input : tensor with size [batch_size, # of words]
+        batch_size = x.size(0)
+        num_of_words = x.size(1)
+        
+        embedding = torch.zeros(batch_size, num_of_words, self.dim)
+        for i in range(batch_size):
+            for j in range(num_of_words):
+                embedding[i][j][x[i][j]] = 1
+
+        return embedding
 
 class Transformer(nn.Module):
     def __init__(self):
