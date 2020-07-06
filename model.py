@@ -3,6 +3,24 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
+def positional_encoding(x):
+    # input : embedded vector (a tensor with size [batch_size, num_of_words, d_model])
+    batch_size = x.size(0)
+    num_of_words = x.size(1)
+    d_model = x.size(2)
+    
+    pe_base = torch.zeros(1, num_of_words, d_model)
+    for pos in range(num_of_words):
+        for i in range(d_model):
+            if i % 2 == 0:
+                pe_base[0][pos][i] = np.cos((pos + 1) / (10000 ** (float(i) / d_model)))
+            else:
+                pe_base[0][pos][i] = np.sin((pos + 1) / (10000 ** (float(i + 1) / d_model)))
+    
+    pe = pe_base.repeat(batch_size, 1, 1) # batch_size * num_of_words * d_model
+
+    return pe + x
+
 def scaled_dot_product_attention(Q, K, V):
     # input format
     # Q : tensor with size [batch_size, n, d_k]
@@ -71,9 +89,10 @@ class DecoderBlock(nn.Module):
         pass
 
 # one-hot vector encoding
-class Embedding():
-    def __init__(self, vocab_size):
+class Embedding(nn.Module):
+    def __init__(self, d_model, vocab_size):
         self.dim = vocab_size # embedding dimension
+        self.linear = nn.Linear(self.dim, d_model)
 
     def forward(self, x):
         # input : tensor with size [batch_size, # of words]
@@ -85,7 +104,7 @@ class Embedding():
             for j in range(num_of_words):
                 embedding[i][j][x[i][j]] = 1
 
-        return embedding
+        return self.linear(embedding) # batch_size * num_of_words * d_model
 
 class Transformer(nn.Module):
     def __init__(self):
