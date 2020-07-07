@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+import copy
 
 from torch.autograd import Variable
 
@@ -23,13 +24,14 @@ def positional_encoding(x):
 
     return pe + x
 
-
 class Embedding(nn.Module):
     def __init__(self, d_model, vocab_size):
+        super(Embedding, self).__init__()
         self.dim = vocab_size # embedding dimension
         self.linear = nn.Linear(self.dim, d_model)
 
     def forward(self, x):
+        x = torch.tensor(x)
         # input : tensor with size [batch_size, num_of_words]
         batch_size = x.size(0)
         num_of_words = x.size(1)
@@ -66,6 +68,9 @@ def scaled_dot_product_attention(Q, K, V, mask):
     Kt = torch.transpose(K, -2, -1) # batch_size * d_k * num_of_words
     QKt = torch.bmm(Q,Kt) # batch_size * num_of_words * num_of_words
 
+    if Q.size() != K.size():
+        print(Q.size(), K.size())
+    
     masked_QKt = QKt.masked_fill(mask == 1, -1e9)
 
     weights = F.softmax(masked_QKt/np.sqrt(d_k)) # batch_size * num_of_words * num_of_words
@@ -139,7 +144,7 @@ class EncoderBlock(nn.Module):
 class DecoderBlock(nn.Module):
     def __init__(self, d_model, d_k, d_v, d_ff, h):
         super(DecoderBlock, self).__init__()
-        self.self_attnetion_layer = MultiHeadAttention(d_model, d_k, d_v, h)
+        self.self_attention_layer = MultiHeadAttention(d_model, d_k, d_v, h)
         self.enc_dec_attention_layer = MultiHeadAttention(d_model, d_k, d_v, h)
         self.feed_forward_layer = nn.Sequential(
                                     nn.Linear(d_model, d_ff),
@@ -162,11 +167,11 @@ class DecoderBlock(nn.Module):
         
         x1 = self.self_attention_layer(x, x, x, trg_mask | self_mask)
         x2 = x + x1 # residual path
-        x3 = nn.ln1(x2)
+        x3 = self.ln1(x2)
 
         x4 = self.enc_dec_attention_layer(x3, K, V, src_mask)
         x5 = x3 + x4 # residual path
-        x6 = nn.ln2(x5)
+        x6 = self.ln2(x5)
 
         x7 = self.feed_forward_layer(x6)
         x8 = x6 + x7 # residual path
@@ -189,14 +194,11 @@ class Transformer(nn.Module):
         
     def forward(self, src, trg):
         src, src_mask = self.src_embedding(src)
-        for i in range(num_enc):
+        for i in range(self.num_enc):
             src = self.encoder_layers[i](src, src_mask)
         
         trg, trg_mask = self.trg_embedding(trg)
-        for i in range(num_dec):
+        for i in range(self.num_dec):
             trg = self.decoder_layers[i](trg, trg_mask, src, src, src_mask)
         
-        return nn.linear(trg) # batch_size * num_of_words * trg_vocab_size
-        
-
-        
+        return self.linear(trg) # batch_size * num_of_words * trg_vocab_size
