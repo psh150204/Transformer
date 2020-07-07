@@ -21,7 +21,7 @@ def positional_encoding(x):
 
     return pe + x
 
-def scaled_dot_product_attention(Q, K, V):
+def scaled_dot_product_attention(Q, K, V, mask):
     # input format
     # Q : tensor with size [batch_size, n, d_k]
     # K : tensor with size [batch_size, m, d_k]
@@ -30,7 +30,8 @@ def scaled_dot_product_attention(Q, K, V):
     d_k = Q.size(2) # scale factor
     Kt = torch.transpose(K, -2, -1) # batch_size * d_k * m
     QKt = torch.bmm(Q,Kt) # batch_size * n * m
-    weights = F.softmax(QKt/np.sqrt(d_k)) # batch_size * n * m
+    masked_QKt = torch.bmm(QKt, mask)
+    weights = F.softmax(masked_QKt/np.sqrt(d_k)) # batch_size * n * m
     return torch.bmm(weights, V) # batch_size * n * d_v
 
 class SingleHeadAttention(nn.Module):
@@ -40,7 +41,7 @@ class SingleHeadAttention(nn.Module):
         self.linear_k = nn.Linear(d_model, d_k)
         self.linear_v = nn.Linear(d_model, d_v)
 
-    def forward(self, Q, K, V):
+    def forward(self, Q, K, V, mask):
         # input format
         # Q : tensor with size [batch_size, n, d_model]
         # K : tensor with size [batch_size, m, d_model]
@@ -49,7 +50,7 @@ class SingleHeadAttention(nn.Module):
         projected_Q = self.linear_q(Q)
         projected_K = self.linear_k(K)
         projected_V = self.linear_v(V)
-        Attn = scaled_dot_product_attention(projected_Q, projected_K, projected_V)
+        Attn = scaled_dot_product_attention(projected_Q, projected_K, projected_V, mask)
         return Attn # batch_size * n * d_v
 
 class MultiHeadAttention(nn.Module):
@@ -60,7 +61,7 @@ class MultiHeadAttention(nn.Module):
             self.heads.append(SingleHeadAttention(d_model, d_k, d_v))
         self.linear = nn.Linear(h*d_v, d_model)
 
-    def forward(self, Q, K, V):
+    def forward(self, Q, K, V, mask):
         # input format
         # Q : tensor with size [batch_size, n, d_model]
         # K : tensor with size [batch_size, m, d_model]
@@ -68,7 +69,7 @@ class MultiHeadAttention(nn.Module):
 
         attentions = []
         for head in self.heads:
-            attentions.append(head(Q, K, V))# batch_size * n * d_v
+            attentions.append(head(Q, K, V, mask))# batch_size * n * d_v
         
         concated_attention = torch.cat(attentions, dim = 2) # batch_size * n * (h * d_v)
         return self.linear(concated_attention) # batch_size * n * d_model
@@ -81,18 +82,21 @@ class EncoderBlock(nn.Module):
                                     nn.Linear(d_model, d_ff),
                                     nn.ReLU(),
                                     nn.Linear(d_ff, d_model))
-        self.ln = nn.LayerNorm()
+        self.ln1 = nn.LayerNorm(d_model)
+        self.ln2 = nn.LayerNorm(d_model)
 
     def forward(self, x):
         # input : a tensor with size [batch_size, num_of_words, d_model]
-        x1 = self.attention_layer(x)
+        mask = 
+
+        x1 = self.attention_layer(x, x, x, mask)
         x2 = x + x1 # residual sum
-        x3 = self.LayerNorm(x2)
+        x3 = self.ln1(x2)
 
         x4 = self.feed_forward_layer(x3)
         x5 = x3 + x4 # residual sum
         
-        return self.LayerNorm(x5)
+        return self.ln2(x5)
 
 class DecoderBlock(nn.Module):
     def __init__(self, d_model, d_k, d_v, h):
@@ -103,10 +107,25 @@ class DecoderBlock(nn.Module):
                                     nn.Linear(d_model, d_ff),
                                     nn.ReLU(),
                                     nn.Linear(d_ff, d_model))
+        self.ln1 = nn.LayerNorm(d_model)
+        self.ln2 = nn.LayerNorm(d_model)
+        self.ln3 = nn.LayerNorm(d_model)
 
-    def forward(self, x):
+    def forward(self, x, K, V):
         # input : a tensor with size [batch_size, num_of_words, d_model]
-        x1 = 
+        mask1 = 
+        mask2 = 
+        x1 = self.self_attention_layer(x, x, x, mask1)
+        x2 = x + x1 # residual path
+        x3 = nn.ln1(x2)
+
+        x4 = self.enc_dec_attention_layer(x3, K, V, mask2)
+        x5 = x3 + x4 # residual path
+        x6 = nn.ln2(x5)
+
+        x7 = self.feed_forward_layer(x6)
+        x8 = x6 + x7 # residual path
+        return self.ln3(x8)
 
 # one-hot vector encoding
 class Embedding(nn.Module):
