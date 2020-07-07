@@ -35,21 +35,24 @@ class Embedding(nn.Module):
         num_of_words = x.size(1)
 
         # embedding
-        embedding = torch.zeros(batch_size, num_of_words, self.dim)
+        one_hot_encoding = torch.zeros(batch_size, num_of_words, self.dim)
         for i in range(batch_size):
             for j in range(num_of_words):
-                embedding[i][j][x[i][j]] = 1
+                one_hot_encoding[i][j][x[i][j]] = 1
 
         # masking
         padding = 2
         mask = (x == padding)
         masks = []
-        for w in mask:
-            masks.append(w.unsqueeze(0).repeat(num_of_words,1).unsqueeze(0))
+        for elem in mask:
+            masks.append(elem.unsqueeze(0).repeat(num_of_words,1).unsqueeze(0))
 
         input_mask = torch.cat(masks, dim = 0) # batch_size * num_of_words * num_of_words
 
-        return self.linear(embedding), input_mask # batch_size * num_of_words * d_model
+        embedding = self.linear(one_hot_encoding) # batch_size * num_of_words * d_model
+        positionally_encoded_embedding = positional_encoding(embedding)
+
+        return positionally_encoded_embedding, input_mask
 
 
 def scaled_dot_product_attention(Q, K, V, mask):
@@ -134,7 +137,7 @@ class EncoderBlock(nn.Module):
         return self.ln2(x5)
 
 class DecoderBlock(nn.Module):
-    def __init__(self, d_model, d_k, d_v, h):
+    def __init__(self, d_model, d_k, d_v, d_ff, h):
         super(DecoderBlock, self).__init__()
         self.self_attnetion_layer = MultiHeadAttention(d_model, d_k, d_v, h)
         self.enc_dec_attention_layer = MultiHeadAttention(d_model, d_k, d_v, h)
@@ -146,7 +149,7 @@ class DecoderBlock(nn.Module):
         self.ln2 = nn.LayerNorm(d_model)
         self.ln3 = nn.LayerNorm(d_model)
 
-    def forward(self, x, K, V, mask):
+    def forward(self, x, trg_mask, K, V, src_mask):
         # input
         # x : a tensor with size [batch_size, num_of_words, d_model]
         # K : a tensor with size [batch_size, num_of_words, d_model]
@@ -157,11 +160,11 @@ class DecoderBlock(nn.Module):
         self_mask = np.triu(np.ones((1, num_of_words, num_of_words)), k=1)
         self_mask = Variable(torch.from_numpy(self_mask) == 1) # batch_size * num_of_words * num_of_words
         
-        x1 = self.self_attention_layer(x, x, x, mask | self_mask)
+        x1 = self.self_attention_layer(x, x, x, trg_mask | self_mask)
         x2 = x + x1 # residual path
         x3 = nn.ln1(x2)
 
-        x4 = self.enc_dec_attention_layer(x3, K, V, mask)
+        x4 = self.enc_dec_attention_layer(x3, K, V, src_mask)
         x5 = x3 + x4 # residual path
         x6 = nn.ln2(x5)
 
@@ -169,15 +172,31 @@ class DecoderBlock(nn.Module):
         x8 = x6 + x7 # residual path
         return self.ln3(x8)
 
+
+def get_clones(module, N):
+    return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
+
 class Transformer(nn.Module):
-    def __init__(self, num_enc, num_dec):
+    def __init__(self, num_enc, num_dec, src_vocab_size, trg_vocab_size, d_model, d_k, d_v, d_ff, h):
         super(Transformer, self).__init__()
-        self.encoder = []
-        for _ in range(num_enc):
-            self.encoder.append(EncoderBlock())
-        self.decoder = []
-        for _ in range(num_dec):
-            self.decoder.append(DecoderBlock())
+        self.num_enc = num_enc
+        self.num_dec = num_dec
+        self.src_embedding = Embedding(d_model, src_vocab_size)
+        self.trg_embedding = Embedding(d_model, trg_vocab_size)
+        self.encoder_layers = get_clones(EncoderBlock(d_model, d_k, d_v, d_ff, h), num_enc)
+        self.decoder_layers = get_clones(DecoderBlock(d_model, d_k, d_v, d_ff, h), num_dec)
+        self.linear = nn.Linear(d_model, trg_vocab_size)
         
-    def forward(self, x):
-        pass
+    def forward(self, src, trg):
+        src, src_mask = self.src_embedding(src)
+        for i in range(num_enc):
+            src = self.encoder_layers[i](src, src_mask)
+        
+        trg, trg_mask = self.trg_embedding(trg)
+        for i in range(num_dec):
+            trg = self.decoder_layers[i](trg, trg_mask, src, src, src_mask)
+        
+        return nn.linear(trg) # batch_size * num_of_words * trg_vocab_size
+        
+
+        
