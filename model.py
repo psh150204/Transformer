@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
+from torch.autograd import Variable
+
 def positional_encoding(x):
     # input : embedded vector (a tensor with size [batch_size, num_of_words, d_model])
     batch_size = x.size(0)
@@ -21,18 +23,50 @@ def positional_encoding(x):
 
     return pe + x
 
+
+class Embedding(nn.Module):
+    def __init__(self, d_model, vocab_size):
+        self.dim = vocab_size # embedding dimension
+        self.linear = nn.Linear(self.dim, d_model)
+
+    def forward(self, x):
+        # input : tensor with size [batch_size, num_of_words]
+        batch_size = x.size(0)
+        num_of_words = x.size(1)
+
+        # embedding
+        embedding = torch.zeros(batch_size, num_of_words, self.dim)
+        for i in range(batch_size):
+            for j in range(num_of_words):
+                embedding[i][j][x[i][j]] = 1
+
+        # masking
+        padding = 2
+        mask = (x == padding)
+        masks = []
+        for w in mask:
+            masks.append(w.unsqueeze(0).repeat(num_of_words,1).unsqueeze(0))
+
+        input_mask = torch.cat(masks, dim = 0) # batch_size * num_of_words * num_of_words
+
+        return self.linear(embedding), input_mask # batch_size * num_of_words * d_model
+
+
 def scaled_dot_product_attention(Q, K, V, mask):
     # input format
-    # Q : tensor with size [batch_size, n, d_k]
-    # K : tensor with size [batch_size, m, d_k]
-    # V : tensor with size [batch_size, m, d_v]
+    # Q : tensor with size [batch_size, num_of_words, d_k]
+    # K : tensor with size [batch_size, num_of_words, d_k]
+    # V : tensor with size [batch_size, num_of_words, d_v]
+    # mask : tensor with size [batch_size, num_of_words, num_of_words]
     
     d_k = Q.size(2) # scale factor
-    Kt = torch.transpose(K, -2, -1) # batch_size * d_k * m
-    QKt = torch.bmm(Q,Kt) # batch_size * n * m
-    masked_QKt = torch.bmm(QKt, mask)
-    weights = F.softmax(masked_QKt/np.sqrt(d_k)) # batch_size * n * m
-    return torch.bmm(weights, V) # batch_size * n * d_v
+    Kt = torch.transpose(K, -2, -1) # batch_size * d_k * num_of_words
+    QKt = torch.bmm(Q,Kt) # batch_size * num_of_words * num_of_words
+
+    masked_QKt = QKt.masked_fill(mask == 1, -1e9)
+
+    weights = F.softmax(masked_QKt/np.sqrt(d_k)) # batch_size * num_of_words * num_of_words
+    return torch.bmm(weights, V) # batch_size * num_of_words * d_v
 
 class SingleHeadAttention(nn.Module):
     def __init__(self, d_model, d_k, d_v):
@@ -43,15 +77,15 @@ class SingleHeadAttention(nn.Module):
 
     def forward(self, Q, K, V, mask):
         # input format
-        # Q : tensor with size [batch_size, n, d_model]
-        # K : tensor with size [batch_size, m, d_model]
-        # V : tensor with size [batch_size, m, d_model]
+        # Q : tensor with size [batch_size, num_of_words, d_model]
+        # K : tensor with size [batch_size, num_of_words, d_model]
+        # V : tensor with size [batch_size, num_of_words, d_model]
 
         projected_Q = self.linear_q(Q)
         projected_K = self.linear_k(K)
         projected_V = self.linear_v(V)
         Attn = scaled_dot_product_attention(projected_Q, projected_K, projected_V, mask)
-        return Attn # batch_size * n * d_v
+        return Attn # batch_size * num_of_words * d_v
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, d_model, d_k, d_v, h):
@@ -63,16 +97,16 @@ class MultiHeadAttention(nn.Module):
 
     def forward(self, Q, K, V, mask):
         # input format
-        # Q : tensor with size [batch_size, n, d_model]
-        # K : tensor with size [batch_size, m, d_model]
-        # V : tensor with size [batch_size, m, d_model]
+        # Q : tensor with size [batch_size, num_of_words, d_model]
+        # K : tensor with size [batch_size, num_of_words, d_model]
+        # V : tensor with size [batch_size, num_of_words, d_model]
 
         attentions = []
         for head in self.heads:
-            attentions.append(head(Q, K, V, mask))# batch_size * n * d_v
+            attentions.append(head(Q, K, V, mask))# batch_size * num_of_words * d_v
         
-        concated_attention = torch.cat(attentions, dim = 2) # batch_size * n * (h * d_v)
-        return self.linear(concated_attention) # batch_size * n * d_model
+        concated_attention = torch.cat(attentions, dim = 2) # batch_size * num_of_words * (h * d_v)
+        return self.linear(concated_attention) # batch_size * num_of_words * d_model
 
 class EncoderBlock(nn.Module):
     def __init__(self, d_model, d_k, d_v, d_ff, h):
@@ -85,9 +119,10 @@ class EncoderBlock(nn.Module):
         self.ln1 = nn.LayerNorm(d_model)
         self.ln2 = nn.LayerNorm(d_model)
 
-    def forward(self, x):
-        # input : a tensor with size [batch_size, num_of_words, d_model]
-        mask = 
+    def forward(self, x, mask):
+        # input
+        # x : a tensor with size [batch_size, num_of_words, d_model]
+        # mask : a tensor with size [batch_size, num_of_words, num_of_words]
 
         x1 = self.attention_layer(x, x, x, mask)
         x2 = x + x1 # residual sum
@@ -111,39 +146,28 @@ class DecoderBlock(nn.Module):
         self.ln2 = nn.LayerNorm(d_model)
         self.ln3 = nn.LayerNorm(d_model)
 
-    def forward(self, x, K, V):
-        # input : a tensor with size [batch_size, num_of_words, d_model]
-        mask1 = 
-        mask2 = 
-        x1 = self.self_attention_layer(x, x, x, mask1)
+    def forward(self, x, K, V, mask):
+        # input
+        # x : a tensor with size [batch_size, num_of_words, d_model]
+        # K : a tensor with size [batch_size, num_of_words, d_model]
+        # V : a tensor with size [batch_size, num_of_words, d_model]
+
+        num_of_words = x.size(1)
+        
+        self_mask = np.triu(np.ones((1, num_of_words, num_of_words)), k=1)
+        self_mask = Variable(torch.from_numpy(self_mask) == 1) # batch_size * num_of_words * num_of_words
+        
+        x1 = self.self_attention_layer(x, x, x, mask | self_mask)
         x2 = x + x1 # residual path
         x3 = nn.ln1(x2)
 
-        x4 = self.enc_dec_attention_layer(x3, K, V, mask2)
+        x4 = self.enc_dec_attention_layer(x3, K, V, mask)
         x5 = x3 + x4 # residual path
         x6 = nn.ln2(x5)
 
         x7 = self.feed_forward_layer(x6)
         x8 = x6 + x7 # residual path
         return self.ln3(x8)
-
-# one-hot vector encoding
-class Embedding(nn.Module):
-    def __init__(self, d_model, vocab_size):
-        self.dim = vocab_size # embedding dimension
-        self.linear = nn.Linear(self.dim, d_model)
-
-    def forward(self, x):
-        # input : tensor with size [batch_size, # of words]
-        batch_size = x.size(0)
-        num_of_words = x.size(1)
-        
-        embedding = torch.zeros(batch_size, num_of_words, self.dim)
-        for i in range(batch_size):
-            for j in range(num_of_words):
-                embedding[i][j][x[i][j]] = 1
-
-        return self.linear(embedding) # batch_size * num_of_words * d_model
 
 class Transformer(nn.Module):
     def __init__(self, num_enc, num_dec):
