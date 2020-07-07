@@ -28,9 +28,9 @@ def scaled_dot_product_attention(Q, K, V):
     # V : tensor with size [batch_size, m, d_v]
     
     d_k = Q.size(2) # scale factor
-    KT = torch.transpose(K, 1, 2) # batch_size * d_k * m
-    QKT = torch.bmm(Q,KT) # batch_size * n * m
-    weights = F.softmax(QKT/np.sqrt(d_k)) # batch_size * n * m
+    Kt = torch.transpose(K, -2, -1) # batch_size * d_k * m
+    QKt = torch.bmm(Q,Kt) # batch_size * n * m
+    weights = F.softmax(QKt/np.sqrt(d_k)) # batch_size * n * m
     return torch.bmm(weights, V) # batch_size * n * d_v
 
 class SingleHeadAttention(nn.Module):
@@ -74,19 +74,39 @@ class MultiHeadAttention(nn.Module):
         return self.linear(concated_attention) # batch_size * n * d_model
 
 class EncoderBlock(nn.Module):
-    def __init__(self):
+    def __init__(self, d_model, d_k, d_v, d_ff, h):
         super(EncoderBlock, self).__init__()
-         
+        self.attention_layer = MultiHeadAttention(d_model, d_k, d_v, h)
+        self.feed_forward_layer = nn.Sequential(
+                                    nn.Linear(d_model, d_ff),
+                                    nn.ReLU(),
+                                    nn.Linear(d_ff, d_model))
+        self.ln = nn.LayerNorm()
 
     def forward(self, x):
-        pass
+        # input : a tensor with size [batch_size, num_of_words, d_model]
+        x1 = self.attention_layer(x)
+        x2 = x + x1 # residual sum
+        x3 = self.LayerNorm(x2)
+
+        x4 = self.feed_forward_layer(x3)
+        x5 = x3 + x4 # residual sum
+        
+        return self.LayerNorm(x5)
 
 class DecoderBlock(nn.Module):
-    def __init__(self):
+    def __init__(self, d_model, d_k, d_v, h):
         super(DecoderBlock, self).__init__()
+        self.self_attnetion_layer = MultiHeadAttention(d_model, d_k, d_v, h)
+        self.enc_dec_attention_layer = MultiHeadAttention(d_model, d_k, d_v, h)
+        self.feed_forward_layer = nn.Sequential(
+                                    nn.Linear(d_model, d_ff),
+                                    nn.ReLU(),
+                                    nn.Linear(d_ff, d_model))
 
     def forward(self, x):
-        pass
+        # input : a tensor with size [batch_size, num_of_words, d_model]
+        x1 = 
 
 # one-hot vector encoding
 class Embedding(nn.Module):
@@ -107,24 +127,14 @@ class Embedding(nn.Module):
         return self.linear(embedding) # batch_size * num_of_words * d_model
 
 class Transformer(nn.Module):
-    def __init__(self):
+    def __init__(self, num_enc, num_dec):
         super(Transformer, self).__init__()
-        self.encoder = nn.Sequential(
-                        EncoderBlock(),
-                        EncoderBlock(),
-                        EncoderBlock(),
-                        EncoderBlock(),
-                        EncoderBlock(),
-                        EncoderBlock())
-        self.decoder = nn.Sequential(
-                        DecoderBlock(),
-                        DecoderBlock(),
-                        DecoderBlock(),
-                        DecoderBlock(),
-                        DecoderBlock(),
-                        DecoderBlock())
+        self.encoder = []
+        for _ in range(num_enc):
+            self.encoder.append(EncoderBlock())
+        self.decoder = []
+        for _ in range(num_dec):
+            self.decoder.append(DecoderBlock())
         
-
-
     def forward(self, x):
         pass
