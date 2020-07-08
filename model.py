@@ -12,7 +12,7 @@ def positional_encoding(x):
     sentence_length = x.size(1)
     d_model = x.size(2)
     
-    pe_base = Variable(torch.zeros(1, sentence_length, d_model), require_grad = False)
+    pe_base = Variable(torch.zeros(1, sentence_length, d_model)).cuda()
     for pos in range(sentence_length):
         for i in range(d_model):
             if i % 2 == 0:
@@ -24,24 +24,32 @@ def positional_encoding(x):
 
     return pe + x
 
-class Embedding(nn.Module):
-    def __init__(self, d_model, vocab_size):
-        super(Embedding, self).__init__()
-        self.dim = vocab_size # embedding dimension
-        self.linear = nn.Linear(self.dim, d_model)
+class OneHotVectorEncoding(nn.Module):
+    def __init__(self, vocab_size):
+        super(OneHotVectorEncoding, self).__init__()
+        self.dim = vocab_size
 
     def forward(self, x):
-        x = torch.tensor(x)
         # input : tensor with size [batch_size, sentence_length]
         batch_size = x.size(0)
         sentence_length = x.size(1)
 
         # embedding
-        one_hot_encoding = Variable(torch.zeros(batch_size, sentence_length, self.dim))
+        one_hot_encoding = Variable(torch.zeros(batch_size, sentence_length, self.dim)).cuda()
         for i in range(batch_size):
             for j in range(sentence_length):
                 one_hot_encoding[i][j][x[i][j]] = 1
 
+        return one_hot_encoding
+
+class Embedding(nn.Module):
+    def __init__(self, d_model, vocab_size):
+        super(Embedding, self).__init__()
+        self.embedder = OneHotVectorEncoding(vocab_size)
+        self.linear = nn.Linear(vocab_size, d_model)
+
+    def forward(self, x):
+        one_hot_encoding = self.embedder(x)
         embedding = self.linear(one_hot_encoding) # batch_size * sentence_length * d_model
         positionally_encoded_embedding = positional_encoding(embedding)
 
@@ -123,7 +131,6 @@ class EncoderBlock(nn.Module):
         # input
         # x : a tensor with size [batch_size, sentence_length, d_model]
         # mask : a tensor with size [batch_size, sentence_length, sentence_length]
-
         x1 = self.attention_layer(x, x, x, mask)
         x2 = x + self.dropout1(x1) # residual sum
         x3 = self.ln1(x2)
@@ -159,7 +166,7 @@ class DecoderBlock(nn.Module):
         sentence_length = x.size(1)
         
         self_mask = np.triu(np.ones((1, sentence_length, sentence_length)), k=1)
-        self_mask = Variable(torch.from_numpy(self_mask) == 1) # batch_size * sentence_length * sentence_length
+        self_mask = Variable(torch.from_numpy(self_mask) == 1).cuda() # batch_size * sentence_length * sentence_length
         
         x1 = self.self_attention_layer(x, x, x, trg_mask | self_mask)
         x2 = x + self.dropout1(x1) # residual path
@@ -207,6 +214,7 @@ class Transformer(nn.Module):
         
     def forward(self, src, trg):
         src_mask, memory_mask, trg_mask = generate_masks(src, trg, 2, 2)
+        #src_mask, memory_mask, trg_mask = src_mask.to(self.device), memory_mask.to(self.device), trg_mask.to(self.device)
 
         src = self.src_embedding(src)
         for i in range(self.num_enc):
