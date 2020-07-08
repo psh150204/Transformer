@@ -7,20 +7,20 @@ import copy
 from torch.autograd import Variable
 
 def positional_encoding(x):
-    # input : embedded vector (a tensor with size [batch_size, num_of_words, d_model])
+    # input : embedded vector (a tensor with size [batch_size, sentence_length, d_model])
     batch_size = x.size(0)
-    num_of_words = x.size(1)
+    sentence_length = x.size(1)
     d_model = x.size(2)
     
-    pe_base = torch.zeros(1, num_of_words, d_model)
-    for pos in range(num_of_words):
+    pe_base = Variable(torch.zeros(1, sentence_length, d_model), require_grad = False)
+    for pos in range(sentence_length):
         for i in range(d_model):
             if i % 2 == 0:
                 pe_base[0][pos][i] = np.cos((pos + 1) / (10000 ** (float(i) / d_model)))
             else:
                 pe_base[0][pos][i] = np.sin((pos + 1) / (10000 ** (float(i + 1) / d_model)))
     
-    pe = pe_base.repeat(batch_size, 1, 1) # batch_size * num_of_words * d_model
+    pe = pe_base.repeat(batch_size, 1, 1) # batch_size * sentence_length * d_model
 
     return pe + x
 
@@ -32,49 +32,37 @@ class Embedding(nn.Module):
 
     def forward(self, x):
         x = torch.tensor(x)
-        # input : tensor with size [batch_size, num_of_words]
+        # input : tensor with size [batch_size, sentence_length]
         batch_size = x.size(0)
-        num_of_words = x.size(1)
+        sentence_length = x.size(1)
 
         # embedding
-        one_hot_encoding = torch.zeros(batch_size, num_of_words, self.dim)
+        one_hot_encoding = Variable(torch.zeros(batch_size, sentence_length, self.dim))
         for i in range(batch_size):
-            for j in range(num_of_words):
+            for j in range(sentence_length):
                 one_hot_encoding[i][j][x[i][j]] = 1
 
-        # masking
-        padding = 2
-        mask = (x == padding)
-        masks = []
-        for elem in mask:
-            masks.append(elem.unsqueeze(0).repeat(num_of_words,1).unsqueeze(0))
-
-        input_mask = torch.cat(masks, dim = 0) # batch_size * num_of_words * num_of_words
-
-        embedding = self.linear(one_hot_encoding) # batch_size * num_of_words * d_model
+        embedding = self.linear(one_hot_encoding) # batch_size * sentence_length * d_model
         positionally_encoded_embedding = positional_encoding(embedding)
 
-        return positionally_encoded_embedding, input_mask
+        return positionally_encoded_embedding
 
 
 def scaled_dot_product_attention(Q, K, V, mask):
     # input format
-    # Q : tensor with size [batch_size, num_of_words, d_k]
-    # K : tensor with size [batch_size, num_of_words, d_k]
-    # V : tensor with size [batch_size, num_of_words, d_v]
-    # mask : tensor with size [batch_size, num_of_words, num_of_words]
+    # Q : tensor with size [batch_size, sentence_length1, d_k]
+    # K : tensor with size [batch_size, sentence_length2, d_k]
+    # V : tensor with size [batch_size, sentence_length2, d_v]
+    # mask : tensor with size [batch_size, sentence_length1, sentence_length2]
     
-    d_k = Q.size(2) # scale factor
-    Kt = torch.transpose(K, -2, -1) # batch_size * d_k * num_of_words
-    QKt = torch.bmm(Q,Kt) # batch_size * num_of_words * num_of_words
-
-    if Q.size() != K.size():
-        print(Q.size(), K.size())
+    d_k = Q.size(-1) # scale factor
+    Kt = torch.transpose(K, -2, -1) # batch_size * d_k * sentence_length2
+    QKt = torch.bmm(Q,Kt) # batch_size * sentence_length1 * sentence_length2
     
     masked_QKt = QKt.masked_fill(mask == 1, -1e9)
 
-    weights = F.softmax(masked_QKt/np.sqrt(d_k)) # batch_size * num_of_words * num_of_words
-    return torch.bmm(weights, V) # batch_size * num_of_words * d_v
+    weights = F.softmax(masked_QKt/np.sqrt(d_k), dim = -1) # batch_size * sentence_length1 * sentence_length2
+    return torch.bmm(weights, V) # batch_size * sentence_length1 * d_v
 
 class SingleHeadAttention(nn.Module):
     def __init__(self, d_model, d_k, d_v):
@@ -85,36 +73,34 @@ class SingleHeadAttention(nn.Module):
 
     def forward(self, Q, K, V, mask):
         # input format
-        # Q : tensor with size [batch_size, num_of_words, d_model]
-        # K : tensor with size [batch_size, num_of_words, d_model]
-        # V : tensor with size [batch_size, num_of_words, d_model]
+        # Q : tensor with size [batch_size, sentence_length, d_model]
+        # K : tensor with size [batch_size, sentence_length, d_model]
+        # V : tensor with size [batch_size, sentence_length, d_model]
 
         projected_Q = self.linear_q(Q)
         projected_K = self.linear_k(K)
         projected_V = self.linear_v(V)
         Attn = scaled_dot_product_attention(projected_Q, projected_K, projected_V, mask)
-        return Attn # batch_size * num_of_words * d_v
+        return Attn # batch_size * sentence_length * d_v
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, d_model, d_k, d_v, h):
         super(MultiHeadAttention, self).__init__()
-        self.heads = []
-        for _ in range(h):
-            self.heads.append(SingleHeadAttention(d_model, d_k, d_v))
+        self.heads = get_clones(SingleHeadAttention(d_model, d_k, d_v), h)
         self.linear = nn.Linear(h*d_v, d_model)
 
     def forward(self, Q, K, V, mask):
         # input format
-        # Q : tensor with size [batch_size, num_of_words, d_model]
-        # K : tensor with size [batch_size, num_of_words, d_model]
-        # V : tensor with size [batch_size, num_of_words, d_model]
+        # Q : tensor with size [batch_size, sentence_length, d_model]
+        # K : tensor with size [batch_size, sentence_length, d_model]
+        # V : tensor with size [batch_size, sentence_length, d_model]
 
         attentions = []
         for head in self.heads:
-            attentions.append(head(Q, K, V, mask))# batch_size * num_of_words * d_v
+            attentions.append(head(Q, K, V, mask))# batch_size * sentence_length * d_v
         
-        concated_attention = torch.cat(attentions, dim = 2) # batch_size * num_of_words * (h * d_v)
-        return self.linear(concated_attention) # batch_size * num_of_words * d_model
+        concated_attention = torch.cat(attentions, dim = 2) # batch_size * sentence_length * (h * d_v)
+        return self.linear(concated_attention) # batch_size * sentence_length * d_model
 
 class EncoderBlock(nn.Module):
     def __init__(self, d_model, d_k, d_v, d_ff, h):
@@ -129,8 +115,8 @@ class EncoderBlock(nn.Module):
 
     def forward(self, x, mask):
         # input
-        # x : a tensor with size [batch_size, num_of_words, d_model]
-        # mask : a tensor with size [batch_size, num_of_words, num_of_words]
+        # x : a tensor with size [batch_size, sentence_length, d_model]
+        # mask : a tensor with size [batch_size, sentence_length, sentence_length]
 
         x1 = self.attention_layer(x, x, x, mask)
         x2 = x + x1 # residual sum
@@ -154,22 +140,22 @@ class DecoderBlock(nn.Module):
         self.ln2 = nn.LayerNorm(d_model)
         self.ln3 = nn.LayerNorm(d_model)
 
-    def forward(self, x, trg_mask, K, V, src_mask):
+    def forward(self, x, trg_mask, K, V, memory_mask):
         # input
-        # x : a tensor with size [batch_size, num_of_words, d_model]
-        # K : a tensor with size [batch_size, num_of_words, d_model]
-        # V : a tensor with size [batch_size, num_of_words, d_model]
+        # x : a tensor with size [batch_size, sentence_length, d_model]
+        # K : a tensor with size [batch_size, sentence_length, d_model]
+        # V : a tensor with size [batch_size, sentence_length, d_model]
 
-        num_of_words = x.size(1)
+        sentence_length = x.size(1)
         
-        self_mask = np.triu(np.ones((1, num_of_words, num_of_words)), k=1)
-        self_mask = Variable(torch.from_numpy(self_mask) == 1) # batch_size * num_of_words * num_of_words
+        self_mask = np.triu(np.ones((1, sentence_length, sentence_length)), k=1)
+        self_mask = Variable(torch.from_numpy(self_mask) == 1) # batch_size * sentence_length * sentence_length
         
         x1 = self.self_attention_layer(x, x, x, trg_mask | self_mask)
         x2 = x + x1 # residual path
         x3 = self.ln1(x2)
 
-        x4 = self.enc_dec_attention_layer(x3, K, V, src_mask)
+        x4 = self.enc_dec_attention_layer(x3, K, V, memory_mask)
         x5 = x3 + x4 # residual path
         x6 = self.ln2(x5)
 
@@ -180,6 +166,23 @@ class DecoderBlock(nn.Module):
 
 def get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
+
+def generate_masks(src, trg, src_padding, trg_padding):
+    # input
+    # src : a tensor with size [batch_size, src_sentence_length]
+    # trg : a tensor with size [batch_size, trg_sentence_length]
+
+    src_n = src.size(1) # src_sentence_length
+    trg_n = trg.size(1) # trg_sentence_length
+
+    src_padding_mask = (src == src_padding).unsqueeze(1) # batch_size * 1 * src_sentence_length
+    trg_padding_mask = (trg == trg_padding).unsqueeze(1) # batch_size * 1 * trg_sentence_length
+
+    src_mask = src_padding_mask.repeat(1, src_n, 1) # batch_size * src_sentence_length * src_sentence_length
+    memory_mask = src_padding_mask.repeat(1, trg_n, 1) # batch_size * trg_sentence_length * src_sentence_length
+    trg_mask = trg_padding_mask.repeat(1, trg_n, 1) # batch_size * trg_sentence_length * trg_sentence_length
+
+    return src_mask, memory_mask, trg_mask
 
 class Transformer(nn.Module):
     def __init__(self, num_enc, num_dec, src_vocab_size, trg_vocab_size, d_model, d_k, d_v, d_ff, h):
@@ -193,12 +196,14 @@ class Transformer(nn.Module):
         self.linear = nn.Linear(d_model, trg_vocab_size)
         
     def forward(self, src, trg):
-        src, src_mask = self.src_embedding(src)
+        src_mask, memory_mask, trg_mask = generate_masks(src, trg, 2, 2)
+
+        src = self.src_embedding(src)
         for i in range(self.num_enc):
             src = self.encoder_layers[i](src, src_mask)
         
-        trg, trg_mask = self.trg_embedding(trg)
+        trg = self.trg_embedding(trg)
         for i in range(self.num_dec):
-            trg = self.decoder_layers[i](trg, trg_mask, src, src, src_mask)
+            trg = self.decoder_layers[i](trg, trg_mask, src, src, memory_mask)
         
-        return self.linear(trg) # batch_size * num_of_words * trg_vocab_size
+        return self.linear(trg) # batch_size * sentence_length * trg_vocab_size
