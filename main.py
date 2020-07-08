@@ -7,6 +7,8 @@ from utils import seq2sen
 from model import Transformer
 
 import numpy as np
+import torch
+import torch.nn.functional as F
 
 def main(args):
     src, tgt = load_data(args.path)
