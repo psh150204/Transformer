@@ -86,6 +86,7 @@ class SingleHeadAttention(nn.Module):
 class MultiHeadAttention(nn.Module):
     def __init__(self, d_model, d_k, d_v, h):
         super(MultiHeadAttention, self).__init__()
+        self.h = h
         self.heads = get_clones(SingleHeadAttention(d_model, d_k, d_v), h)
         self.linear = nn.Linear(h*d_v, d_model)
 
@@ -96,8 +97,8 @@ class MultiHeadAttention(nn.Module):
         # V : tensor with size [batch_size, sentence_length, d_model]
 
         attentions = []
-        for head in self.heads:
-            attentions.append(head(Q, K, V, mask))# batch_size * sentence_length * d_v
+        for i in range(self.h):
+            attentions.append(self.heads[i](Q, K, V, mask))# batch_size * sentence_length * d_v
         
         concated_attention = torch.cat(attentions, dim = 2) # batch_size * sentence_length * (h * d_v)
         return self.linear(concated_attention) # batch_size * sentence_length * d_model
