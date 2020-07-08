@@ -48,7 +48,7 @@ class Embedding(nn.Module):
         return positionally_encoded_embedding
 
 
-def scaled_dot_product_attention(Q, K, V, mask):
+def scaled_dot_product_attention(Q, K, V, mask, dropout):
     # input format
     # Q : tensor with size [batch_size, sentence_length1, d_k]
     # K : tensor with size [batch_size, sentence_length2, d_k]
@@ -62,6 +62,7 @@ def scaled_dot_product_attention(Q, K, V, mask):
     masked_QKt = QKt.masked_fill(mask == 1, -1e9)
 
     weights = F.softmax(masked_QKt/np.sqrt(d_k), dim = -1) # batch_size * sentence_length1 * sentence_length2
+    weights = dropout(weights)
     return torch.bmm(weights, V) # batch_size * sentence_length1 * d_v
 
 class SingleHeadAttention(nn.Module):
@@ -71,7 +72,7 @@ class SingleHeadAttention(nn.Module):
         self.linear_k = nn.Linear(d_model, d_k)
         self.linear_v = nn.Linear(d_model, d_v)
 
-    def forward(self, Q, K, V, mask):
+    def forward(self, Q, K, V, mask, dropout):
         # input format
         # Q : tensor with size [batch_size, sentence_length, d_model]
         # K : tensor with size [batch_size, sentence_length, d_model]
@@ -80,14 +81,15 @@ class SingleHeadAttention(nn.Module):
         projected_Q = self.linear_q(Q)
         projected_K = self.linear_k(K)
         projected_V = self.linear_v(V)
-        Attn = scaled_dot_product_attention(projected_Q, projected_K, projected_V, mask)
+        Attn = scaled_dot_product_attention(projected_Q, projected_K, projected_V, mask, dropout)
         return Attn # batch_size * sentence_length * d_v
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, d_model, d_k, d_v, h):
+    def __init__(self, d_model, d_k, d_v, h, p_drop = 0.1):
         super(MultiHeadAttention, self).__init__()
         self.h = h
         self.heads = get_clones(SingleHeadAttention(d_model, d_k, d_v), h)
+        self.dropout = nn.Dropout(p_drop)
         self.linear = nn.Linear(h*d_v, d_model)
 
     def forward(self, Q, K, V, mask):
@@ -98,21 +100,24 @@ class MultiHeadAttention(nn.Module):
 
         attentions = []
         for i in range(self.h):
-            attentions.append(self.heads[i](Q, K, V, mask))# batch_size * sentence_length * d_v
+            attentions.append(self.heads[i](Q, K, V, mask, self.dropout))# batch_size * sentence_length * d_v
         
         concated_attention = torch.cat(attentions, dim = 2) # batch_size * sentence_length * (h * d_v)
         return self.linear(concated_attention) # batch_size * sentence_length * d_model
 
 class EncoderBlock(nn.Module):
-    def __init__(self, d_model, d_k, d_v, d_ff, h):
+    def __init__(self, d_model, d_k, d_v, d_ff, h, p_drop = 0.1):
         super(EncoderBlock, self).__init__()
         self.attention_layer = MultiHeadAttention(d_model, d_k, d_v, h)
         self.feed_forward_layer = nn.Sequential(
                                     nn.Linear(d_model, d_ff),
                                     nn.ReLU(),
+                                    nn.Dropout(p_drop),
                                     nn.Linear(d_ff, d_model))
         self.ln1 = nn.LayerNorm(d_model)
         self.ln2 = nn.LayerNorm(d_model)
+        self.dropout1 = nn.Dropout(p_drop)
+        self.dropout2 = nn.Dropout(p_drop)
 
     def forward(self, x, mask):
         # input
@@ -120,26 +125,30 @@ class EncoderBlock(nn.Module):
         # mask : a tensor with size [batch_size, sentence_length, sentence_length]
 
         x1 = self.attention_layer(x, x, x, mask)
-        x2 = x + x1 # residual sum
+        x2 = x + self.dropout1(x1) # residual sum
         x3 = self.ln1(x2)
 
         x4 = self.feed_forward_layer(x3)
-        x5 = x3 + x4 # residual sum
+        x5 = x3 + self.dropout2(x4) # residual sum
         
         return self.ln2(x5)
 
 class DecoderBlock(nn.Module):
-    def __init__(self, d_model, d_k, d_v, d_ff, h):
+    def __init__(self, d_model, d_k, d_v, d_ff, h, p_drop = 0.1):
         super(DecoderBlock, self).__init__()
         self.self_attention_layer = MultiHeadAttention(d_model, d_k, d_v, h)
         self.enc_dec_attention_layer = MultiHeadAttention(d_model, d_k, d_v, h)
         self.feed_forward_layer = nn.Sequential(
                                     nn.Linear(d_model, d_ff),
                                     nn.ReLU(),
+                                    nn.Dropout(p_drop),
                                     nn.Linear(d_ff, d_model))
         self.ln1 = nn.LayerNorm(d_model)
         self.ln2 = nn.LayerNorm(d_model)
         self.ln3 = nn.LayerNorm(d_model)
+        self.dropout1 = nn.Dropout(p_drop)
+        self.dropout2 = nn.Dropout(p_drop)
+        self.dropout3 = nn.Dropout(p_drop)
 
     def forward(self, x, trg_mask, K, V, memory_mask):
         # input
@@ -153,15 +162,15 @@ class DecoderBlock(nn.Module):
         self_mask = Variable(torch.from_numpy(self_mask) == 1) # batch_size * sentence_length * sentence_length
         
         x1 = self.self_attention_layer(x, x, x, trg_mask | self_mask)
-        x2 = x + x1 # residual path
+        x2 = x + self.dropout1(x1) # residual path
         x3 = self.ln1(x2)
 
         x4 = self.enc_dec_attention_layer(x3, K, V, memory_mask)
-        x5 = x3 + x4 # residual path
+        x5 = x3 + self.dropout2(x4) # residual path
         x6 = self.ln2(x5)
 
         x7 = self.feed_forward_layer(x6)
-        x8 = x6 + x7 # residual path
+        x8 = x6 + self.dropout3(x7) # residual path
         return self.ln3(x8)
 
 
