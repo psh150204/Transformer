@@ -214,7 +214,6 @@ class Transformer(nn.Module):
         
     def forward(self, src, trg):
         src_mask, memory_mask, trg_mask = generate_masks(src, trg, 2, 2)
-        #src_mask, memory_mask, trg_mask = src_mask.to(self.device), memory_mask.to(self.device), trg_mask.to(self.device)
 
         src = self.src_embedding(src)
         for i in range(self.num_enc):
