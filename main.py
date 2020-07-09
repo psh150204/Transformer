@@ -10,6 +10,17 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+def save_checkpoint(epoch, step_num, model, optimizer, path):
+    state = {
+        'epoch' : epoch,
+        'step_num' : step_num,
+        'state_dict' : model.state_dict(),
+        'optimizer' : optimizer.state_dict()
+    }
+    
+    torch.save(state, path)
+    print('A check point has been generated : ' + path)
+
 def main(args):
     src, tgt = load_data(args.path)
 
@@ -24,6 +35,14 @@ def main(args):
     pad_idx = 2
     max_length = 50
 
+    num_enc = 6
+    num_dec = 6
+    d_model = 512
+    d_k = 64
+    d_v = 64
+    d_ff = 2048
+    h = 8
+
     # TODO: use these values to construct embedding layers
     src_vocab_size = len(src_vocab)
     tgt_vocab_size = len(tgt_vocab)
@@ -31,17 +50,28 @@ def main(args):
     print(src_vocab_size)
     print(tgt_vocab_size)
 
+    device = torch.device("cuda" if(torch.cuda.is_available()) else "cpu")
+    transformer = Transformer(6, 6, src_vocab_size, tgt_vocab_size, d_model, d_k, d_v, d_ff, h).to(device)
+    
+    checkpoint_path = 'checkpoints/final'
+    if arg.test and os.path.exists(checkpoint_path):
+        checkpoint = torch.load(checkpoint_path)
+        transformer.load_state_dict(checkpoint['state_dict'])
+        print("trained model is loaded from : " + checkpoint_path)
+
     if not args.test:
         train_loader = get_loader(src['train'], tgt['train'], src_vocab, tgt_vocab, batch_size=args.batch_size, shuffle=True)
         valid_loader = get_loader(src['valid'], tgt['valid'], src_vocab, tgt_vocab, batch_size=args.batch_size)
 
         # TODO: train
         optimizer = torch.optim.Adam(transformer.parameters(), lr=0.0001, betas=(0.9, 0.98), eps=1e-9)
+        
+        step_num = 1
+        warmup_steps = 4000
         losses = []
 
         print('Start training ...')
         for epoch in range(100):
-
             start_epoch = time.time()
             i = 0
 
@@ -56,12 +86,18 @@ def main(args):
                 
                 pred = transformer(src_batch, trg_input)
 
+                # lr scheduling
+                lr = (d_model ** -0.5) * min(step_num ** -0.5, step_num * (warmup_steps ** -1.5))
+                for group in optimizer.param_groups:
+                    group['lr'] = lr
+
                 optimizer.zero_grad()
 
                 loss = F.cross_entropy(pred.view(-1, pred.size(-1)), trg_output, ignore_index = 2)
                 loss.backward()
 
                 optimizer.step()
+                step_num += 1
 
                 i = i+1
                 losses.append(loss.item())
@@ -87,7 +123,11 @@ def main(args):
             epoch_time = time.time() - start_epoch
             print('Time taken for %d epoch : %.2fs'%(epoch+1, epoch_time))
 
+            if (epoch+1) % 3 == 0:
+                save_checkpoint(epoch, step_num, transformer, optimizer, 'checkpoints/epoch_%d'%(epoch+1))
+
         print('End of the training')
+        save_checkpoint(epoch, step_num, transformer, optimizer, 'checkpoints/final')
     else:
         # test
         test_loader = get_loader(src['test'], tgt['test'], src_vocab, tgt_vocab, batch_size=args.batch_size)
@@ -102,20 +142,21 @@ def main(args):
             #  [0, 4, 9, 1, 2],
             #  [0, 6, 1, 2, 2]]
 
-            batch_size = tgt_batch.size(0)
+            batch_size = len(tgt_batch)
             src_batch = torch.tensor(src_batch).to(device)
-            pred_batch = torch.zeros(batch_size, 1).to(device) # [[0],[0],...,[0]]
-            
+            pred_batch = torch.zeros(batch_size, 1, dtype = int).to(device) # [[0],[0],...,[0]]
             # eos_mask[i] = 1 means i-th sentence has eos
-            eos_mask = torch.zeros(batch_size)
+            eos_mask = torch.zeros(batch_size, dtype = int)
 
             for _ in range(max_length):
                 output = transformer(src_batch, pred_batch) # batch_size * sentence_length * tgt_vocab_size
                 output = torch.argmax(F.softmax(output, dim = -1), dim = -1) # batch_size * sentence_length
-                pred_batch = torch.cat([pred_batch, output[:, -1]], dim = -1)
+                predictions = output[:,-1].unsqueeze(1)
+                
+                pred_batch = torch.cat([pred_batch, predictions], dim = -1)
 
                 for i in range(batch_size):
-                    if output[:, -1][i] == eos_index:
+                    if predictions[i] == eos_idx:
                         eos_mask[i] = 1
 
                 # every sentence has eos
