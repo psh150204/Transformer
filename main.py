@@ -163,7 +163,7 @@ def main(args):
                 if eos_mask.sum() == batch_size :
                     break
 
-            pred += seq2sen(pred_batch, tgt_vocab)
+            pred += seq2sen(pred_batch.cpu().numpy().tolist(), tgt_vocab)
 
         with open('results/pred.txt', 'w') as f:
             for line in pred:
