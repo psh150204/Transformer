@@ -1,6 +1,6 @@
 # Attention Is All You Need (Transformer)
 
-PyTorch implementation of the Transformer
+PyTorch implementation of the paper 'Attention is all you need' (NeurIPS 2017)
 
 ### Requirements
 * Python 3.6 >
